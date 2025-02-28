@@ -1,1 +1,241 @@
+{
+  "name": "DiamondzShadowMovies Testnet",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/devcontainers/features/go:1": {}
+  },
+  "postCreateCommand": "npm install && go get -v -t -d ./...",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "juanblanco.solidity",
+        "tintinweb.graphviz-interactive-preview",
+        "ms-vscode.vscode-typescript-tslint-plugin"
+      ]
+    }
+  },
+  "forwardPorts": [8545],
+  "remoteUser": "vscode"
+}
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20FlashMint.sol";
+
+contract DiamondzShadowMovies is ERC20, AccessControl, ERC20Permit, ERC20FlashMint {
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
+
+    uint256 public constant MAX_SUPPLY = 1000000000 * 10**18; // 1 billion tokens
+    uint256 public constant MIN_SUPPLY = 500000000 * 10**18; // 500 million tokens
+    uint256 public constant MINTING_THRESHOLD = 750000000 * 10**18; // 750 million tokens
+    uint256 public constant BURN_PERCENTAGE = 10; // 10% burn every 2 years
+    uint256 public constant BURN_INTERVAL = 2 years;
+    uint256 public constant TOTAL_BURN_PERIODS = 5; // 10 years total
+
+    uint256 public lastBurnTimestamp;
+    uint256 public burnPeriodsExecuted;
+
+    constructor(address recipient, address defaultAdmin, address minter)
+        ERC20("DiamondzShadow Movies", "DASm")
+        ERC20Permit("DiamondzShadow Movies")
+    {
+        _mint(recipient, MAX_SUPPLY);
+        _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
+        _grantRole(MINTER_ROLE, minter);
+        _grantRole(BURNER_ROLE, address(this));
+        lastBurnTimestamp = block.timestamp;
+    }
+
+    function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) {
+        require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+        _mint(to, amount);
+    }
+
+    function executeBurnAndMint() public {
+        require(block.timestamp >= lastBurnTimestamp + BURN_INTERVAL, "Burn interval not reached");
+        require(burnPeriodsExecuted < TOTAL_BURN_PERIODS, "Burn periods completed");
+
+        uint256 currentSupply = totalSupply();
+        uint256 amountToBurn = (currentSupply * BURN_PERCENTAGE) / 100;
+
+        if (currentSupply - amountToBurn < MIN_SUPPLY) {
+            amountToBurn = currentSupply - MIN_SUPPLY;
+        }
+
+        _burn(address(this), amountToBurn);
+
+        if (totalSupply() < MIN_SUPPLY) {
+            uint256 amountToMint = MINTING_THRESHOLD - totalSupply();
+            _mint(address(this), amountToMint);
+        }
+
+        lastBurnTimestamp = block.timestamp;
+        burnPeriodsExecuted++;
+    }
+
+    function flashLoan(
+        IERC3156FlashBorrower receiver,
+        address token,
+        uint256 amount,
+        bytes calldata data
+    ) public override returns (bool) {
+        require(token == address(this), "FlashLoan: unsupported token");
+        require(amount <= MAX_SUPPLY - totalSupply(), "FlashLoan: exceeds available supply");
+
+        return super.flashLoan(receiver, token, amount, data);
+    }
+
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override {
+        super._beforeTokenTransfer(from, to, amount);
+        if (from != address(0) && to != address(0)) {
+            if (block.timestamp >= lastBurnTimestamp + BURN_INTERVAL && burnPeriodsExecuted < TOTAL_BURN_PERIODS) {
+                executeBurnAndMint();
+            }
+        }
+    }
+}
+
+require("@nomicfoundation/hardhat-toolbox")
+require("@nomiclabs/hardhat-waffle")
+require("@nomiclabs/hardhat-ethers")
+require("dotenv").config()
+
+const OPTIMISM_SEPOLIA_RPC = process.env.OPTIMISM_SEPOLIA_RPC || "https://opt-sepolia.g.alchemy.com/v2/your-api-key"
+
+/** @type import('hardhat/config').HardhatUserConfig */
+module.exports = {
+  solidity: "0.8.22",
+  networks: {
+    diamondshadow: {
+      url: "http://127.0.0.1:8545",
+      accounts: [process.env.PRIVATE_KEY || "0x0000000000000000000000000000000000000000000000000000000000000001"],
+      chainId: 15678,
+    },
+    optimismSepolia: {
+      url: OPTIMISM_SEPOLIA_RPC,
+      accounts: [process.env.PRIVATE_KEY || "0x0000000000000000000000000000000000000000000000000000000000000001"],
+      chainId: 11155420,
+    },
+    optimism: {
+      url: process.env.OPTIMISM_RPC_URL,
+      accounts: [process.env.PRIVATE_KEY],
+    },
+    optimismGoerli: {
+      url: process.env.OPTIMISM_GOERLI_RPC_URL,
+      accounts: [process.env.PRIVATE_KEY],
+    },
+    localhost: {
+      url: "http://127.0.0.1:8545",
+    },
+    dasmt_testnet: {
+      url: "http://localhost:8545",
+      chainId: 15678,
+      accounts: [process.env.PRIVATE_KEY],
+    },
+  },
+  paths: {
+    artifacts: "./artifacts",
+    cache: "./cache",
+    sources: "./contracts",
+    tests: "./test",
+  },
+}
+
+const hre = require("hardhat")
+
+async function main() {
+  const [deployer, defaultAdmin, minter] = await hre.ethers.getSigners()
+
+  console.log("Deploying contracts with the account:", deployer.address)
+
+  // Deploy DiamondzShadowMovies
+  const DiamondzShadowMovies = await hre.ethers.getContractFactory("DiamondzShadowMovies")
+  const dasmToken = await DiamondzShadowMovies.deploy(deployer.address, defaultAdmin.address, minter.address)
+  await dasmToken.deployed()
+  console.log("DiamondzShadowMovies deployed to:", dasmToken.address)
+
+  // Grant MINTER_ROLE to the minter address
+  const MINTER_ROLE = await dasmToken.MINTER_ROLE()
+  await dasmToken.grantRole(MINTER_ROLE, minter.address)
+  console.log("MINTER_ROLE granted to:", minter.address)
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error)
+    process.exit(1)
+  })
+
+#!/bin/bash
+
+# Install Geth
+sudo add-apt-repository -y ppa:ethereum/ethereum
+sudo apt-get update
+sudo apt-get install -y ethereum
+
+# Create testnet directory
+mkdir -p ~/dasmt_testnet
+cd ~/dasmt_testnet
+
+# Create a new account (you'll be prompted to enter a password)
+geth account new --datadir ./data
+
+# Create genesis.json (replace YOUR_ACCOUNT_ADDRESS with the address generated above)
+cat > genesis.json <<EOL
+{
+  "config": {
+    "chainId": 15678,
+    "homesteadBlock": 0,
+    "eip150Block": 0,
+    "eip155Block": 0,
+    "eip158Block": 0,
+    "byzantiumBlock": 0,
+    "constantinopleBlock": 0,
+    "petersburgBlock": 0,
+    "istanbulBlock": 0,
+    "muirGlacierBlock": 0,
+    "berlinBlock": 0,
+    "londonBlock": 0
+  },
+  "alloc": {
+    "YOUR_ACCOUNT_ADDRESS": { "balance": "1000000000000000000000" }
+  },
+  "coinbase": "0x0000000000000000000000000000000000000000",
+  "difficulty": "0x20000",
+  "extraData": "",
+  "gasLimit": "0x2fefd8",
+  "nonce": "0x0000000000000042",
+  "mixhash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "timestamp": "0x00"
+}
+EOL
+
+# Initialize the testnet
+geth init --datadir ./data genesis.json
+
+# Create start script
+cat > start_node.sh <<EOL
+#!/bin/bash
+geth --datadir ./data --networkid 15678 --mine --miner.threads 1 --http --http.addr "0.0.0.0" --http.port 8545 --http.api "eth,net,web3,personal,miner" --allow-insecure-unlock
+EOL
+
+chmod +x start_node.sh
+
+echo "Testnet setup complete. Run ./start_node.sh to start your testnet node."
+
+PRIVATE_KEY=your_private_key_here
+MINTER_ADDRESS=address_with_minter_role
+DEFAULT_ADMIN_ADDRESS=address_with_admin_role
+OPTIMISM_SEPOLIA_RPC=https://opt-sepolia.g.alchemy.com/v2/your-api-key
+OPTIMISM_RPC_URL=https://mainnet.optimism.io
+OPTIMISM_GOERLI_RPC_URL=https://goerli.optimism.io
+
 
